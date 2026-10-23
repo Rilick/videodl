@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Video Downloader</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="card">
+    <h1>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"/>
+        <polygon points="10 8 16 12 10 16 10 8" fill="currentColor" stroke="none"/>
+      </svg>
+      Video Downloader
+    </h1>
+    <p class="subtitle">Cola o link do vídeo e clica em Inspecionar</p>
+
+    <div class="input-row">
+      <input id="url" type="url" placeholder="https://www.abola.pt/video/..." autocomplete="off" spellcheck="false">
+      <button id="btn-inspect">Inspecionar</button>
+    </div>
+
+    <div id="error" class="error hidden"></div>
+    <div id="auth-hint" class="auth-hint hidden">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+      </svg>
+      <div>
+        <strong>Este site requer autenticação.</strong>
+        Exporta as tuas cookies do browser com a extensão
+        <em>Get cookies.txt LOCALLY</em> (Chrome/Edge) e coloca o ficheiro em
+        <code>cookies.txt</code> na pasta do servidor. O servidor vai usá-las automaticamente.
+      </div>
+    </div>
+
+    <div id="preview" class="preview hidden">
+      <img id="thumb" src="" alt="">
+      <div class="meta">
+        <span id="meta-title"></span>
+        <span id="meta-duration" class="dim"></span>
+      </div>
+    </div>
+
+    <div id="res-section" class="res-section hidden">
+      <span class="res-label">Qualidade</span>
+      <div id="res-pills" class="res-pills"></div>
+    </div>
+
+    <button id="btn-dl" class="btn-dl hidden">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <path d="M12 3v13M5 13l7 7 7-7"/>
+        <line x1="3" y1="21" x2="21" y2="21"/>
+      </svg>
+      Descarregar
+    </button>
+
+    <div id="progress-section" class="progress-section hidden">
+      <div class="progress-header">
+        <span id="phase-label">A descarregar...</span>
+        <span id="pct-label" class="pct">0%</span>
+      </div>
+      <div class="bar-wrap">
+        <div id="bar" class="bar"></div>
+      </div>
+      <div class="bar-stats">
+        <span id="speed-label" class="dim"></span>
+        <span id="eta-label" class="dim"></span>
+      </div>
+    </div>
+
+    <div id="done-section" class="done-section hidden">
+      <div class="done-msg">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <circle cx="12" cy="12" r="10"/>
+          <path d="M8 12l3 3 5-5"/>
+        </svg>
+        Download iniciado com sucesso!
+      </div>
+      <button id="btn-new" class="btn-new">Descarregar outro vídeo</button>
+    </div>
+
+    <div id="spinner" class="spinner hidden">
+      <div class="ring"></div>
+      <span id="spinner-msg">A obter informação...</span>
+    </div>
+  </div>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    const urlInput   = $('url');
+    const btnInspect = $('btn-inspect');
+    const errBox     = $('error');
+    const authHint   = $('auth-hint');
+    const preview    = $('preview');
+    const thumb      = $('thumb');
+    const metaTitle  = $('meta-title');
+    const metaDur    = $('meta-duration');
+    const resSection = $('res-section');
+    const resPills   = $('res-pills');
+    const btnDl      = $('btn-dl');
+    const progSec    = $('progress-section');
+    const phaseLabel = $('phase-label');
+    const pctLabel   = $('pct-label');
+    const bar        = $('bar');
+    const speedLabel = $('speed-label');
+    const etaLabel   = $('eta-label');
+    const doneSec    = $('done-section');
+    const btnNew     = $('btn-new');
+    const spinner    = $('spinner');
+    const spinMsg    = $('spinner-msg');
+
+    let state = 'idle';
+    let selectedHeight = null;
+    let evtSource = null;
+
+    const show = (...els) => els.forEach(e => e.classList.remove('hidden'));
+    const hide = (...els) => els.forEach(e => e.classList.add('hidden'));
+
+    function showError(msg, needsAuth) {
+      errBox.textContent = msg;
+      show(errBox);
+      hide(spinner, progSec, doneSec);
+      if (needsAuth) show(authHint); else hide(authHint);
+    }
+
+    function fmtDuration(s) {
+      if (!s) return '';
+      const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
+      return h ? `${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}` : `${m}:${String(sec).padStart(2,'0')}`;
+    }
+
+    function heightLabel(h) {
+      const map = {2160:'4K · Ultra HD', 1440:'2K · QHD', 1080:'1080p · Full HD', 720:'720p · HD', 480:'480p · SD', 360:'360p', 240:'240p', 180:'180p'};
+      return map[h] || `${h}p`;
+    }
+
+    // ── Inspect ────────────────────────────────────────────────────────────────
+
+    btnInspect.addEventListener('click', doInspect);
+    urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doInspect(); } });
+    urlInput.addEventListener('input', () => {
+      if (state !== 'idle') resetToIdle(false);
+    });
+
+    async function doInspect() {
+      const url = urlInput.value.trim();
+      if (!url || state === 'inspecting') return;
+      state = 'inspecting';
+
+      hide(errBox, preview, resSection, btnDl, progSec, doneSec);
+      show(spinner);
+      spinMsg.textContent = 'A obter informação do vídeo…';
+      btnInspect.disabled = true;
+      urlInput.disabled = true;
+
+      try {
+        const fd = new FormData();
+        fd.append('url', url);
+        const res = await fetch('/info', { method: 'POST', body: fd });
+        const data = await res.json();
+
+        hide(spinner);
+        urlInput.disabled = false;
+        btnInspect.disabled = false;
+
+        if (data.error) { showError(data.error, data.needs_auth); state = 'idle'; return; }
+
+        // Preview
+        metaTitle.textContent = data.title || url;
+        metaDur.textContent = fmtDuration(data.duration);
+        if (data.thumbnail) { thumb.src = data.thumbnail; thumb.style.display = ''; }
+        else { thumb.style.display = 'none'; }
+        show(preview);
+
+        // Resolution pills
+        resPills.innerHTML = '';
+        const res_list = data.resolutions || [];
+        if (res_list.length > 1) {
+          res_list.forEach((h, i) => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'pill' + (i === 0 ? ' active' : '');
+            btn.dataset.height = h;
+            btn.textContent = heightLabel(h);
+            btn.addEventListener('click', () => {
+              document.querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
+              btn.classList.add('active');
+              selectedHeight = h;
+            });
+            resPills.appendChild(btn);
+          });
+          selectedHeight = res_list[0];
+          show(resSection);
+        } else {
+          selectedHeight = res_list[0] || null;
+          hide(resSection);
+        }
+
+        show(btnDl);
+        state = 'ready';
+      } catch (e) {
+        urlInput.disabled = false;
+        btnInspect.disabled = false;
+        hide(spinner);
+        showError('Erro de ligação ao servidor.');
+        state = 'idle';
+      }
+    }
+
+    // ── Download ───────────────────────────────────────────────────────────────
+
+    btnDl.addEventListener('click', async () => {
+      if (state !== 'ready') return;
+      state = 'downloading';
+
+      const url = urlInput.value.trim();
+      hide(btnDl, errBox, doneSec);
+      urlInput.disabled = true;
+      btnInspect.disabled = true;
+
+      bar.classList.remove('indeterminate');
+      bar.style.width = '0%';
+      pctLabel.textContent = '0%';
+      phaseLabel.textContent = 'A iniciar…';
+      speedLabel.textContent = '';
+      etaLabel.textContent = '';
+      show(progSec);
+
+      try {
+        const fd = new FormData();
+        fd.append('url', url);
+        if (selectedHeight) fd.append('height', selectedHeight);
+        const res = await fetch('/start', { method: 'POST', body: fd });
+        const { job_id, error } = await res.json();
+        if (error) { showError(error); show(btnDl); hide(progSec); state = 'ready'; return; }
+
+        if (evtSource) evtSource.close();
+        evtSource = new EventSource(`/progress/${job_id}`);
+        evtSource.onmessage = e => handleProgress(JSON.parse(e.data), job_id);
+        evtSource.onerror = () => {
+          if (state === 'done') return;
+          evtSource.close();
+          showError('Ligação ao servidor interrompida.');
+          hide(progSec);
+          show(btnDl);
+          urlInput.disabled = false;
+          btnInspect.disabled = false;
+          state = 'ready';
+        };
+      } catch (e) {
+        showError('Erro ao iniciar o download.');
+        show(btnDl);
+        hide(progSec);
+        state = 'ready';
+      }
+    });
+
+    function handleProgress(d, jobId) {
+      if (d.status === 'starting') {
+        phaseLabel.textContent = 'A iniciar…';
+
+      } else if (d.status === 'downloading') {
+        const phases = { video: 'A descarregar vídeo…', audio: 'A descarregar áudio…' };
+        phaseLabel.textContent = phases[d.phase] || 'A descarregar…';
+        bar.classList.remove('indeterminate');
+        bar.style.width = d.progress + '%';
+        pctLabel.textContent = d.progress.toFixed(1) + '%';
+        speedLabel.textContent = d.speed || '';
+        etaLabel.textContent = d.eta ? 'ETA ' + d.eta : '';
+
+      } else if (d.status === 'processing') {
+        phaseLabel.textContent = 'A combinar vídeo e áudio…';
+        bar.classList.add('indeterminate');
+        pctLabel.textContent = '';
+        speedLabel.textContent = '';
+        etaLabel.textContent = '';
+
+      } else if (d.status === 'done') {
+        evtSource.close();
+        evtSource = null;
+        state = 'done';
+        hide(progSec);
+        show(doneSec);
+        // Trigger browser download
+        const a = document.createElement('a');
+        a.href = `/file/${jobId}`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+      } else if (d.status === 'error') {
+        evtSource.close();
+        evtSource = null;
+        hide(progSec);
+        showError(d.error || 'Erro desconhecido ao descarregar.');
+        show(btnDl);
+        urlInput.disabled = false;
+        btnInspect.disabled = false;
+        state = 'ready';
+      }
+    }
+
+    // ── Reset ──────────────────────────────────────────────────────────────────
+
+    btnNew.addEventListener('click', () => resetToIdle(true));
+
+    function resetToIdle(clearUrl) {
+      if (evtSource) { evtSource.close(); evtSource = null; }
+      if (clearUrl) urlInput.value = '';
+      urlInput.disabled = false;
+      btnInspect.disabled = false;
+      selectedHeight = null;
+      hide(errBox, authHint, preview, resSection, btnDl, progSec, doneSec, spinner);
+      state = 'idle';
+    }
+  </script>
+</body>
+</html>

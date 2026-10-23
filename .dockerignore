@@ -1,0 +1,8 @@
+.git
+.claude
+venv
+.venv
+cookies.txt
+tests
+__pycache__
+*.py[cod]
