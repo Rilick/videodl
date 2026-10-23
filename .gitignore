@@ -1,0 +1,19 @@
+# Python environments and bytecode
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Browser/session credentials
+cookies.txt
+.env
+.env.*
+
+# Local editor and assistant settings
+.claude/
+.vscode/
+
+# Downloaded media and temporary files
+Downloads/
+*.part
+*.ytdl
